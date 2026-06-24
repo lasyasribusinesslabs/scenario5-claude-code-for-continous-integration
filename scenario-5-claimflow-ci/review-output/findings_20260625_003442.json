@@ -1,0 +1,281 @@
+File: src/auth/login.js
+Line: 13
+Severity: Critical
+Issue: User-supplied `email` is interpolated directly into the SQL query string, allowing SQL injection.
+Fix: Use a parameterized query: `pool.query('SELECT * FROM users WHERE email = $1', [email])`
+
+---
+
+File: src/auth/login.js
+Line: 14
+Severity: Critical
+Issue: `pool.query()` is awaited inside an async function with no try/catch — a DB error will produce an unhandled promise rejection and crash the request.
+Fix: Wrap the query (and the rest of the handler body) in a try/catch that returns a 500 response on error.
+
+---
+
+File: src/auth/login.js
+Line: 22
+Severity: Critical
+Issue: Password is compared in plaintext against the stored value — bcrypt.compare() is never called, so hashed passwords will never match and unhashed passwords are a security breach.
+Fix: `const match = await bcrypt.compare(password, user.password); if (!match) { return res.status(401)... }`
+
+---
+
+File: src/auth/login.js
+Line: 26–29
+Severity: Critical
+Issue: JWT is signed without an `expiresIn` option, so issued tokens never expire and cannot be invalidated by rotation.
+Fix: Add expiry: `jwt.sign({ ... }, jwtSecret, { expiresIn: '1h' })`
+File: src/middleware/authMiddleware.js
+Line: 14–15
+Severity: Critical
+Issue: JWT verification failure calls `next()` instead of returning 401 — every request with an invalid or expired token bypasses authentication and proceeds as if authenticated.
+Fix: Replace `next()` in the error branch with `return res.status(401).json({ error: 'Invalid or expired token' });`
+
+---
+
+File: src/middleware/authMiddleware.js
+Line: 30–34
+Severity: Critical
+Issue: `requireAdmin` is defined but never registered before admin routes in the router — admin-only endpoints are unprotected regardless of the caller's role.
+Fix: Explicitly apply `requireAdmin` as middleware on every admin route, e.g. `router.delete('/users/:id', authMiddleware, requireAdmin, deleteUser)`.
+File: src/tests/unit/userService.test.js
+Line: 24
+Severity: Minor
+Issue: Hardcoded plaintext password `'testpass123'` in test mock data — credentials in test fixtures can end up in logs, CI output, or version history.
+Fix: Replace with a non-sensitive placeholder such as `'$2b$10$hashedpasswordplaceholder'` to reflect what the real field would contain.
+
+File: src/tests/unit/userService.test.js
+Line: 56
+Severity: Minor
+Issue: No test case for `deleteUser` when the DB returns empty rows — the service's `rows[0]` access would throw on an undefined value, and this path is completely uncovered.
+Fix: Add a test that mocks `pool.query` returning `{ rows: [] }` and asserts that `deleteUser` either returns `null` or throws a handled error rather than crashing.
+File: src/tests/integration/auth.test.js
+Line: 5–6
+Severity: Minor
+Issue: Hardcoded admin credentials (`admin123` / `admin@claimflow.io`) are committed in the test file.
+Fix: Load from environment variables: `process.env.TEST_ADMIN_EMAIL` / `process.env.TEST_ADMIN_PASSWORD`.
+
+---
+
+File: src/tests/integration/auth.test.js
+Line: 12
+Severity: Minor
+Issue: Test seeds the database with a plaintext password string — if the login route uses `bcrypt.compare()` this test will always return 401 and silently mask a broken auth flow; if it returns 200, it implies the application stores and compares passwords in plaintext.
+Fix: Hash before inserting: `const hash = await bcrypt.hash(adminPassword, 10);` and pass `hash` as the `$2` parameter.
+File: src/types/index.js
+Line: 4
+Severity: Minor
+Issue: `UserResponse` typedef is missing the `createdAt` field that `userRoutes.js` includes in GET /users/:id responses — callers relying on this type will not know the field exists.
+Fix: Add `@property {string} createdAt` to the `UserResponse` typedef.
+File: src/scripts/seedDb.js
+Line: 37–38
+Severity: Critical
+Issue: Admin password inserted into the database in plaintext — no bcrypt hashing applied before storage.
+Fix: Hash before insert: `const hash = await bcrypt.hash(ADMIN_PASSWORD, 10);` then pass `hash` instead of `ADMIN_PASSWORD`.
+
+File: src/scripts/seedDb.js
+Line: 43
+Severity: Critical
+Issue: Seed user password `'password1'` stored in plaintext — same missing bcrypt pattern as the admin insert.
+Fix: Apply `await bcrypt.hash('password1', 10)` and pass the resulting hash as the password value.
+
+File: src/scripts/seedDb.js
+Line: 4–5
+Severity: Minor
+Issue: Hardcoded admin credentials (`admin123` / `admin@claimflow.io`) in a committed seed script.
+Fix: Read from environment variables: `process.env.ADMIN_PASSWORD` / `process.env.ADMIN_EMAIL`, and fail fast if unset.
+
+File: src/scripts/seedDb.js
+Line: 53
+Severity: Minor
+Issue: `process.exit(0)` called before `pool.end()` — the connection pool is not cleanly shut down.
+Fix: Replace with `await pool.end(); process.exit(0);` (or let the process exit naturally after `pool.end()` resolves).
+File: src/db/connection.js
+Line: 10
+Severity: Critical
+Issue: Database password is hardcoded as a string literal — any developer with repo access or a leaked build artifact gets the credential.
+Fix: Replace with `password: process.env.DB_PASSWORD` and remove the literal value.
+
+File: src/db/connection.js
+Line: 3–11
+Severity: Major
+Issue: Pool is initialized without `max`, `idleTimeoutMillis`, or `connectionTimeoutMillis` — under load the pool will exhaust available connections with no timeout safety, and connection hangs will block indefinitely.
+Fix: Add pool limits:
+```js
+const pool = new Pool({
+  ...
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
+```
+
+File: src/db/connection.js
+Line: 13
+Severity: Major
+Issue: No `pool.on('error')` handler — an idle client error event (e.g. unexpected disconnect) is unhandled and will crash the Node.js process.
+Fix: Add `pool.on('error', (err) => { console.error('Unexpected pool error', err); });` after pool construction.
+File: src/routes/userRoutes.js
+Line: 10
+Severity: Critical
+Issue: `GET /users` has no `authMiddleware` — any unauthenticated caller can retrieve all user records.
+Fix: Add `authMiddleware` as the second argument: `router.get('/users', authMiddleware, async (req, res) => {`
+
+---
+
+File: src/routes/userRoutes.js
+Line: 11–13
+Severity: Critical
+Issue: `GET /users` handler is async with no try/catch — if `pool.query()` throws, the promise rejection is unhandled and the request hangs.
+Fix: Wrap the body in `try { ... } catch (err) { res.status(500).json({ error: 'Internal server error' }); }`
+
+---
+
+File: src/routes/userRoutes.js
+Line: 13
+Severity: Major
+Issue: `res.json(result.rows)` returns all columns, including the `password` field from the users table.
+Fix: Explicitly select only safe fields in the query: `SELECT id, email, role, created_at FROM users` — or map `result.rows` to strip `password` before sending.
+
+---
+
+File: src/routes/userRoutes.js
+Line: 18–25
+Severity: Critical
+Issue: `DELETE /users/:id` handler is async with no try/catch — if `deleteUser()` throws, the promise rejection is unhandled.
+Fix: Wrap the body in try/catch and return a 500 response in the catch block.
+
+---
+
+File: src/routes/userRoutes.js
+Line: 27–39
+Severity: Critical
+Issue: `GET /users/:id` handler is async with no try/catch — if `getUserById()` throws, the promise rejection is unhandled.
+Fix: Wrap the body in try/catch and return a 500 response in the catch block.
+File: src/services/userService.js
+Line: 5
+Severity: Critical
+Issue: SQL injection — `id` is interpolated directly into the query string, allowing arbitrary SQL execution.
+Fix: Use a parameterized query: `pool.query('SELECT * FROM users WHERE id = $1', [id])`
+
+File: src/services/userService.js
+Line: 4
+Severity: Critical
+Issue: Unhandled promise rejection — `getUserById` is async with no try/catch, so any `pool.query` failure will produce an unhandled rejection.
+Fix: Wrap the function body in `try { ... } catch (err) { throw err; }` or let callers handle it via a centralized error handler, but the rejection must be catchable.
+
+File: src/services/userService.js
+Line: 17
+Severity: Critical
+Issue: Unhandled promise rejection — `deleteUser` is async with no try/catch, so a DB error will crash the request with an unhandled rejection.
+Fix: Wrap the body in try/catch.
+
+File: src/services/userService.js
+Line: 23
+Severity: Critical
+Issue: Null dereference — `result.rows[0].id` is accessed without checking whether `result.rows[0]` exists; if DELETE matches no row, this throws a TypeError at runtime.
+Fix: Guard before access: `if (result.rows[0]) { console.log(...) }` or check `result.rows.length > 0` first.
+File: src/services/emailService.js
+Line: 4
+Severity: Critical
+Issue: SendGrid API key is hardcoded in source code — anyone with repo access can use it to send email as ClaimFlow.
+Fix: Replace with `const API_KEY = process.env.SENDGRID_API_KEY;` and load it from environment configuration.
+File: src/config/config.js
+Line: 5
+Severity: Critical
+Issue: Hardcoded fallback DB password `'supersecret123'` will be used in any environment where `DB_PASSWORD` is not set, including production.
+Fix: Remove the fallback entirely: `password: process.env.DB_PASSWORD,` and fail fast on startup if it is missing.
+
+File: src/config/config.js
+Line: 9
+Severity: Critical
+Issue: Hardcoded fallback JWT secret `'my-hardcoded-jwt-secret-do-not-use'` means any environment without `JWT_SECRET` set will sign tokens with a known, public secret — allowing arbitrary token forgery.
+Fix: Remove the fallback: `jwtSecret: process.env.JWT_SECRET,` and throw at startup if the value is absent.
+File: src/models/User.js
+Line: 22–29
+Severity: Major
+Issue: `toJSON()` includes the `password` field — any `JSON.stringify(user)` or `res.json(user)` call will leak the password hash to API consumers.
+Fix: Remove `password` from the returned object in `toJSON()`:
+```js
+toJSON() {
+  return { id: this.id, email: this.email, role: this.role, createdAt: this.createdAt };
+}
+```
+File: src/jobs/cleanupJob.js
+Line: 7–17
+Severity: Major
+Issue: Read-then-delete across two separate queries with no transaction — sessions expiring between the SELECT and DELETE can cause inconsistent state, and sessions inserted after the SELECT but before the DELETE will not be cleaned up correctly.
+Fix: Wrap both queries in a transaction, or collapse to a single atomic query: `DELETE FROM sessions WHERE expires_at < NOW() RETURNING session_id`.
+
+File: src/jobs/cleanupJob.js
+Line: 21–25
+Severity: Major
+Issue: The `.catch()` handler only logs `err.message` and swallows the error — cleanup failures are silently ignored, so degraded state (sessions never cleaned, pool exhaustion, DB outage) is invisible to any alerting or process supervisor.
+Fix: Re-throw after logging, or emit a metric/alert: `console.error(...); throw err;` — or at minimum preserve the full error object (`err`) rather than just `err.message`.
+File: src/utils/pagination.js
+Line: 14–27
+Severity: Critical
+Issue: `paginatedQuery` is async but has no try/catch — if either `pool.query()` call throws (connection error, bad query, etc.), the rejected promise propagates uncaught to the caller.
+Fix: Wrap the function body in a try/catch, or ensure every call site wraps it; at minimum the function itself should catch and rethrow with context so the caller can distinguish DB errors from logic errors.
+```json
+[
+  {
+    "file": "src/middleware/authMiddleware.js",
+    "line": 16,
+    "severity": "Critical",
+    "issue": "authMiddleware.js calls next() on JWT verification failure instead of returning 401. Every route in userRoutes.js that applies authMiddleware (DELETE /users/:id at line 15, GET /users/:id at line 24) will admit requests carrying invalid or expired tokens.",
+    "fix": "Replace next() on the error path with return res.status(401).json({ error: 'Invalid token' })."
+  },
+  {
+    "file": "src/middleware/authMiddleware.js",
+    "line": 27,
+    "severity": "Critical",
+    "issue": "requireAdmin is defined and exported from authMiddleware.js but is never imported or applied in userRoutes.js. Admin-gated operations such as DELETE /users/:id rely solely on authMiddleware, which already passes unauthenticated callers through, leaving the delete endpoint open to any caller.",
+    "fix": "Import requireAdmin in userRoutes.js and chain it after authMiddleware on routes that require admin access."
+  },
+  {
+    "file": "src/db/connection.js",
+    "line": 10,
+    "severity": "Critical",
+    "issue": "connection.js hardcodes the DB password instead of importing from config.js, which reads DB_PASSWORD from the environment. The two files maintain independent credential configurations; setting DB_PASSWORD in the environment corrects config.js but has no effect on the pool actually used by all queries.",
+    "fix": "Import the db config object from config.js and pass it directly to the Pool constructor, removing the duplicated field declarations in connection.js."
+  },
+  {
+    "file": "src/services/emailService.js",
+    "line": 4,
+    "severity": "Critical",
+    "issue": "emailService.js hardcodes API_KEY = 'SG.abc123fakekey' and never reads config.js. config.js correctly reads SENDGRID_API_KEY from the environment into config.mail.apiKey, but emailService bypasses it entirely, so rotating the credential via environment variable has no effect on outgoing mail.",
+    "fix": "Import config from config.js and replace the hardcoded API_KEY with config.mail.apiKey."
+  },
+  {
+    "file": "src/scripts/seedDb.js",
+    "line": 11,
+    "severity": "Major",
+    "issue": "seedDb.js creates the users table without an updated_at column, but userService.js updateUser() (line 31) executes UPDATE users SET updated_at = NOW(). Any call to updateUser() against a database seeded by this script will fail with a column-not-found error at runtime.",
+    "fix": "Add updated_at TIMESTAMPTZ DEFAULT NOW() to the CREATE TABLE users DDL in seedDb.js."
+  },
+  {
+    "file": "src/models/User.js",
+    "line": 14,
+    "severity": "Major",
+    "issue": "User.js constructor and fromRow() have no updatedAt parameter or row mapping, but userService.js updateUser() (line 31) writes updated_at to the DB and returns the updated row via RETURNING *. Callers that pass updateUser() results through User.fromRow() will silently drop the field.",
+    "fix": "Add updatedAt to UserSchema, the constructor destructuring, and User.fromRow() mapping (row.updated_at)."
+  },
+  {
+    "file": "src/routes/userRoutes.js",
+    "line": 15,
+    "severity": "Major",
+    "issue": "Route handlers in userRoutes.js call getUserById() and deleteUser() from userService.js with no try/catch at either layer. A DB error in either service function propagates as an unhandled promise rejection through the route, crashing the process rather than returning a 500.",
+    "fix": "Wrap async route handler bodies in try/catch blocks (or introduce an async error-wrapper middleware) and return res.status(500) on caught errors."
+  },
+  {
+    "file": "src/types/index.js",
+    "line": 2,
+    "severity": "Minor",
+    "issue": "The UserResponse typedef omits createdAt, but GET /users/:id in userRoutes.js (line 34) explicitly returns createdAt in the response body. API clients generated from or validated against this type definition will not account for the field.",
+    "fix": "Add @property {Date} createdAt to the UserResponse typedef in types/index.js."
+  }
+]
+```
