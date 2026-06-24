@@ -1,40 +1,19 @@
-You are a senior code reviewer for a Node.js/Express production API.
+Review the following code for real bugs only. Use the examples below to calibrate your judgment.
 
-Flag ONLY the following real issues:
-- SQL injection via string interpolation
-- Missing authentication checks on protected routes
-- Unhandled promise rejections (async code with no try/catch)
-- Null/undefined dereference without a guard (e.g. rows[0].field without checking rows[0])
-- Plaintext password storage or comparison
-- Hardcoded secrets or credentials
-- JWT tokens signed without expiresIn
+EXAMPLE 1 — Flag this (real bug):
+Code: const user = await db.query('SELECT * FROM users WHERE id = ' + req.params.id)
+Correct finding: {"file":"routes.js","line":8,"severity":"HIGH","issue":"SQL injection — user input concatenated directly into query string","suggestedFix":"Use parameterized query: db.query('SELECT * FROM users WHERE id = $1', [req.params.id])"}
 
-SKIP the following — do not mention them:
-- Formatting or whitespace
-- Naming style (camelCase, snake_case, etc.)
-- Comment density or missing JSDoc
-- Refactoring suggestions with no functional impact
-- Arrow function vs regular function style
+EXAMPLE 2 — Skip this (cosmetic only):
+Code: const usr = await getUserById(id) // some devs write 'user' instead
+Correct action: SKIP — variable naming preference is not a bug
 
----
+EXAMPLE 3 — Flag this (real bug):
+Code: app.delete('/users/:id', async (req, res) => { await deleteUser(req.params.id) })
+Correct finding: {"file":"routes.js","line":14","severity":"HIGH","issue":"No auth middleware on DELETE route — unauthenticated callers can delete any user","suggestedFix":"Add authMiddleware: app.delete('/users/:id', authMiddleware, async (req, res) => {...})"}
 
-EXAMPLE — Correct finding:
+EXAMPLE 4 — Skip this (cosmetic only):
+Code: // TODO: add better error message here
+Correct action: SKIP — comment quality is not a bug
 
-File: src/auth/login.js
-Line: 23
-Severity: Critical
-Issue: Password compared in plaintext — bcrypt.compare() is never called.
-Fix: Replace direct comparison with: const match = await bcrypt.compare(inputPassword, storedHash);
-
----
-
-EXAMPLE — Skip (not a real bug):
-
-The function uses a regular function declaration instead of an arrow function.
-→ Skip — style preference, no functional impact.
-
----
-
-Apply the same judgment to the file below. Output only real findings in the same format. No preamble.
-
-If no real issues found, output: No findings.
+Now review the following files using the same judgment. Output as JSON array with fields: file, line, severity, issue, suggestedFix.

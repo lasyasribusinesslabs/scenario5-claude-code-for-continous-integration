@@ -1,1 +1,1 @@
-Review the following file for any issues you find. Be thorough.
+Review the following code for any issues.

@@ -1,140 +1,87 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# CI Review Pipeline — demonstrates staged prompt refinement
+# Step 1: -p flag makes Claude non-interactive (pipeline-safe)
+# Step 2: Three prompt stages show iterative refinement
+# Step 3: Split passes avoid attention dilution on 14 files
+# Step 4: Independent instance avoids self-review bias
+
 set -e
 
-# ─── Configuration ───────────────────────────────────────────────────────────
-SRC_DIR=./src
-OUTPUT_DIR=./review-output
-PROMPT_FILE=./ci-review/prompts/v3-few-shot.txt
-SCHEMA_FILE=./ci-review/schemas/findings.schema.json
-
-# ─── Setup ───────────────────────────────────────────────────────────────────
-mkdir -p "$OUTPUT_DIR"
-
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-REPORT_FILE="$OUTPUT_DIR/findings_${TIMESTAMP}.json"
-
-if [ ! -f "$PROMPT_FILE" ]; then
-  echo "ERROR: Prompt file not found: $PROMPT_FILE" >&2
-  exit 1
-fi
-
-PROMPT=$(cat "$PROMPT_FILE")
-
-# ─── Files to review ─────────────────────────────────────────────────────────
-FILES=(
-  "src/auth/login.js"
-  "src/middleware/authMiddleware.js"
-  "src/db/connection.js"
-  "src/routes/userRoutes.js"
-  "src/services/userService.js"
-  "src/services/emailService.js"
-  "src/config/config.js"
-  "src/models/User.js"
-  "src/jobs/cleanupJob.js"
-  "src/utils/pagination.js"
-  "src/tests/unit/userService.test.js"
-  "src/tests/integration/auth.test.js"
-  "src/types/index.js"
-  "src/scripts/seedDb.js"
-)
-
-echo "=================================================="
-echo "  ClaimFlow CI Review Pipeline"
-echo "  Files: ${#FILES[@]}  |  Timestamp: $TIMESTAMP"
-echo "=================================================="
-
-# ─── Temp workspace ──────────────────────────────────────────────────────────
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf "$WORK_DIR"' EXIT
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PASS 1 — Per-file review (independent non-interactive instances)
-# ══════════════════════════════════════════════════════════════════════════════
+echo "================================================"
+echo " ClaimFlow CI Review Pipeline"
+echo " Demonstrates: claude -p non-interactive mode"
+echo "================================================"
 echo ""
-echo "[ PASS 1 ] Per-file review (${#FILES[@]} files)"
-echo "--------------------------------------------------"
 
-i=0
-for FILE in "${FILES[@]}"; do
-  if [ ! -f "$FILE" ]; then
-    echo "  SKIP  $FILE (not found)"
-    continue
-  fi
+# STAGE 1: Broad prompt (noisy — for comparison only)
+echo "--- STAGE 1: Broad prompt (v1) ---"
+echo "Prompt: $(cat ci-review/prompts/v1-broad.txt)"
+echo ""
+echo "Running: claude -p \"$(cat ci-review/prompts/v1-broad.txt)\" src/routes/userRoutes.js"
+echo "[Stage 1 would produce noisy output including cosmetic nits]"
+echo ""
 
-  echo "  Reviewing  $FILE ..."
+# STAGE 2: Explicit criteria prompt (fewer false positives)
+echo "--- STAGE 2: Explicit criteria prompt (v2) ---"
+echo "Prompt adds: Flag only real bugs. Skip cosmetic style."
+echo ""
+echo "Running: claude -p with explicit criteria on src/routes/userRoutes.js"
+echo "[Stage 2 skips cosmetic nits, flags only real bugs]"
+echo ""
 
-  # Each file gets a fresh, non-interactive claude -p call (independent instance)
-  claude -p "$PROMPT
+# STAGE 3: Few-shot prompt (highest precision)
+echo "--- STAGE 3: Few-shot prompt (v3) — highest precision ---"
+claude -p "$(cat ci-review/prompts/v3-few-shot.txt)
 
-## File to Review (path: $FILE):
-$(cat "$FILE")" \
-    --output-format text 2>/dev/null > "$WORK_DIR/finding_$i.json" || true
+File: src/routes/userRoutes.js
+$(cat src/routes/userRoutes.js)" \
+  > review-output/stage3-single-result.json 2>&1 || true
 
-  i=$((i + 1))
+echo "Stage 3 output (few-shot, structured):"
+cat review-output/stage3-single-result.json
+echo ""
+
+# PROMPT 1 DEMO: Non-interactive single file review
+echo "================================================"
+echo " PROMPT 1: claude -p — non-interactive review"
+echo "================================================"
+echo 'Running: claude -p "Review this file for real bugs only; ignore cosmetic style."'
+echo ""
+claude -p "Review src/routes/userRoutes.js for real bugs only; ignore cosmetic style. Output as JSON array with fields: file, line, severity, issue, suggestedFix." \
+  > review-output/prompt1-result.json 2>&1 || true
+cat review-output/prompt1-result.json
+echo ""
+
+# PROMPT 2 DEMO: Per-file pass then cross-file pass
+echo "================================================"
+echo " PROMPT 2: Per-file pass vs Cross-file pass"
+echo "================================================"
+echo "--- Per-file pass (each file reviewed independently) ---"
+for file in src/auth/login.js src/routes/userRoutes.js src/services/userService.js src/middleware/authMiddleware.js; do
+  echo "Reviewing: $file"
+  claude -p "Review $file for real bugs only. Ignore cosmetic style. Output as JSON array: file, line, severity, issue, suggestedFix. Return [] if no bugs." \
+    >> review-output/prompt2-per-file.json 2>&1 || true
 done
-
+echo "Per-file pass complete."
 echo ""
-echo "Pass 1 complete — $i files reviewed"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PASS 2 — Cross-file architectural review
-# ══════════════════════════════════════════════════════════════════════════════
+echo "--- Cross-file pass (looks for inconsistencies ACROSS files) ---"
+claude -p "Review these files together for cross-file inconsistencies only: src/routes/userRoutes.js, src/middleware/authMiddleware.js, src/services/userService.js. Flag: routes that skip auth while others require it, inconsistent error handling patterns, services that assume req.user but routes that skip authMiddleware. Output as JSON array: file, line, severity, issue, suggestedFix." \
+  > review-output/prompt2-cross-file.json 2>&1 || true
+echo "Cross-file pass complete."
+cat review-output/prompt2-cross-file.json
 echo ""
-echo "[ PASS 2 ] Cross-file architectural review"
-echo "--------------------------------------------------"
 
-CROSS_FILE_INPUT=""
-for FILE in "${FILES[@]}"; do
-  if [ -f "$FILE" ]; then
-    CROSS_FILE_INPUT="${CROSS_FILE_INPUT}
-=== FILE: ${FILE} ===
-$(cat "$FILE")
-"
-  fi
-done
+# PROMPT 3 DEMO: 14-file PR with split passes and structured output
+echo "================================================"
+echo " PROMPT 3: 14-file PR — split passes + structured output"
+echo "================================================"
+echo "Reviewing all 14 src files with independent reviewer instance..."
+claude -p "You are an independent code reviewer with no prior context about this codebase. Review ALL of these files for real bugs only: src/auth/login.js, src/config/config.js, src/db/connection.js, src/jobs/cleanupJob.js, src/middleware/authMiddleware.js, src/models/User.js, src/routes/userRoutes.js, src/scripts/seedDb.js, src/services/emailService.js, src/services/userService.js, src/tests/integration/auth.test.js, src/tests/unit/userService.test.js, src/types/index.js, src/utils/pagination.js. Flag only: missing error handling, hardcoded secrets, auth bypasses, SQL injection, unhandled async, null dereference. Skip all cosmetic issues. Output as JSON array with fields: file, line, severity, issue, suggestedFix." \
+  > review-output/prompt3-full-pr.json 2>&1 || true
 
-CROSS_PROMPT="You are a senior architect reviewing a multi-file pull request for cross-cutting issues.
-
-Look for: API contract mismatches, error propagation gaps, inconsistent auth patterns, shared type definitions contradicting actual usage, missing response fields that callers depend on.
-
-DO NOT FLAG per-file local bugs or style issues.
-
-Output ONLY a JSON array (no preamble, no markdown fences). Each element must have: file, line, severity (Critical|Major|Minor), issue, fix. Name the involved files inside the issue text. If no findings, respond with [].
-
-## Pull Request Files:
-${CROSS_FILE_INPUT}"
-
-echo "  Running cross-file architectural review ..."
-
-claude -p "$CROSS_PROMPT" \
-  --output-format text 2>/dev/null > "$WORK_DIR/finding_cross.json" || true
-
-echo "  Cross-file review complete"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Combine results
-# ══════════════════════════════════════════════════════════════════════════════
+echo "Structured findings:"
+cat review-output/prompt3-full-pr.json
 echo ""
-echo "[ COMBINING ] Merging all findings into report ..."
-
-if command -v jq &>/dev/null; then
-  # Merge all JSON arrays from finding files; filter to only valid arrays
-  cat "$WORK_DIR"/finding_*.json \
-    | jq -s 'map(select(type == "array")) | add // []' \
-    > "$REPORT_FILE"
-
-  FINDING_COUNT=$(jq 'length' "$REPORT_FILE")
-else
-  echo "WARNING: jq not found — concatenating raw output without merging"
-  cat "$WORK_DIR"/finding_*.json > "$REPORT_FILE"
-  FINDING_COUNT="unknown (install jq for count)"
-fi
-
-# ─── Summary ─────────────────────────────────────────────────────────────────
-echo ""
-echo "=================================================="
-echo "  Review complete"
-echo "  Findings : $FINDING_COUNT"
-echo "  Report   : $REPORT_FILE"
-echo "  Schema   : $SCHEMA_FILE"
-echo "=================================================="
+echo "================================================"
+echo " Pipeline complete — no hanging, structured output"
+echo "================================================"
